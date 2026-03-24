@@ -7,6 +7,7 @@ const studentRoutes = require('./routes/studentRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const feeRoutes = require('./routes/feeRoutes');
 const { startPolling } = require('./services/transactionService');
+const { runMigrations } = require('./services/migrationRunner');
 
 const app = express();
 
@@ -16,6 +17,7 @@ app.use(express.json());
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/stellaredupay')
   .then(() => {
     console.log('MongoDB connected');
+    await runMigrations();
     startPolling();
   })
   .catch(err => console.error('MongoDB error:', err));
