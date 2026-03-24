@@ -137,6 +137,7 @@ async function syncPayments() {
       excessAmount,
       feeAmount: intent.amount,
       feeValidationStatus: feeValidation.status,
+      confirmedAt: new Date(tx.created_at),
       excessAmount: feeValidation.excessAmount,
       status: 'confirmed',
       memo,
