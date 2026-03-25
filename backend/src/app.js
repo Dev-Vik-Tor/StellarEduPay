@@ -85,8 +85,9 @@ async function initializeDatabase() {
 async function initializeServices() {
   // Start existing services
   startPolling();
+  startConsistencyScheduler();
   startRetryWorker();
-  
+
   // Initialize BullMQ retry queue system
   try {
     await initializeRetryQueue(app);
@@ -101,24 +102,19 @@ async function initializeServices() {
 // ── Startup ─────────────────────────────────────────────────────────────────────
 async function startApp() {
   const dbConnected = await initializeDatabase();
-  
+
   if (!dbConnected) {
     logger.error('Failed to connect to database. Exiting...');
     process.exit(1);
   }
-  
+
   await initializeServices();
-  
-  // Handle shutdown signals
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  
   logger.info('Application startup complete');
 }
 
 // Start the application
 startApp();
-// MongoDB connection and service startup
+
 // ── Request timeout ───────────────────────────────────────────────────────────
 // If a response has not been sent within REQUEST_TIMEOUT_MS, reply 503.
 app.use((req, res, next) => {
@@ -130,26 +126,6 @@ app.use((req, res, next) => {
   next();
 });
 
-mongoose.connect(config.MONGO_URI)
-  .then(async () => {
-    logger.info('MongoDB connected');
-
-    // Start existing services
-    startPolling();
-    startConsistencyScheduler();
-    startRetryWorker();
-
-    // Initialize BullMQ retry queue system
-    try {
-      await initializeRetryQueue(app);
-      setupMonitoring(60000);
-      logger.info('All services initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize retry queue system', { error: error.message });
-    }
-  })
-  .catch(err => logger.error('MongoDB error', { error: err.message }));
-
 // Schools — no school context needed (these ARE schools)
 app.use('/api/schools', schoolRoutes);
 
@@ -160,27 +136,8 @@ app.use('/api/fees',      feeRoutes);
 app.use('/api/reports',   reportRoutes);
 app.get('/api/consistency', runConsistencyCheck);
 
-app.get('/health', async (req, res) => {
-  try {
-    const { getSystemStatus } = require('./config/retryQueueSetup');
-    const retryQueueStatus = await getSystemStatus();
-    res.json({
-      status: 'ok',
-      network: config.STELLAR_NETWORK,
-      horizonUrl: config.HORIZON_URL,
-      retryQueue: retryQueueStatus,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    res.json({
-      status: 'ok',
-      network: config.STELLAR_NETWORK,
-      horizonUrl: config.HORIZON_URL,
-      retryQueue: { error: error.message },
-      timestamp: new Date().toISOString(),
-    });
-  }
-});
+const { healthCheck } = require('./controllers/healthController');
+app.get('/health', healthCheck);
 
 // Global error handler
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
@@ -223,7 +180,7 @@ async function shutdown(signal) {
 
   server.close(async () => {
     try {
-      await mongoose.connection.close();
+      await database.disconnect();
       logger.info('MongoDB disconnected — clean exit');
       process.exit(0);
     } catch (err) {
