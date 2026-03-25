@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { registerStudent, getAllStudents, getStudent } = require('../controllers/studentController');
+const { registerStudent, getAllStudents, getStudent, getPaymentSummary } = require('../controllers/studentController');
 const { validateRegisterStudent, validateStudentIdParam } = require('../middleware/validate');
 const { resolveSchool } = require('../middleware/schoolContext');
 
@@ -10,6 +10,7 @@ const { resolveSchool } = require('../middleware/schoolContext');
 router.use(resolveSchool);
 
 router.post('/',             validateRegisterStudent, registerStudent);
+router.get('/summary',       getPaymentSummary);
 router.get('/',              getAllStudents);
 router.get('/:studentId',    validateStudentIdParam, getStudent);
 

@@ -84,4 +84,46 @@ async function getStudent(req, res, next) {
   }
 }
 
-module.exports = { registerStudent, getAllStudents, getStudent };
+// GET /api/students/summary
+async function getPaymentSummary(req, res, next) {
+  try {
+    const Payment = require('../models/paymentModel');
+
+    const [students, payments] = await Promise.all([
+      Student.find({ schoolId: req.schoolId }).lean(),
+      Payment.aggregate([
+        { $match: { schoolId: req.schoolId, status: 'SUCCESS', isSuspicious: { $ne: true } } },
+        { $group: { _id: '$studentId', totalPaid: { $sum: '$amount' } } },
+      ]),
+    ]);
+
+    const paidMap = Object.fromEntries(payments.map(p => [p._id, p.totalPaid]));
+
+    const summary = students.map(s => {
+      const totalPaid = parseFloat((paidMap[s.studentId] || 0).toFixed(7));
+      const remaining = parseFloat(Math.max(0, s.feeAmount - totalPaid).toFixed(7));
+      const status = totalPaid === 0 ? 'unpaid'
+        : totalPaid < s.feeAmount  ? 'partial'
+        : totalPaid > s.feeAmount  ? 'overpaid'
+        : 'paid';
+
+      return {
+        studentId:   s.studentId,
+        name:        s.name,
+        class:       s.class,
+        feeAmount:   s.feeAmount,
+        totalPaid,
+        remaining,
+        status,
+      };
+    });
+
+    const counts = summary.reduce((acc, s) => { acc[s.status] = (acc[s.status] || 0) + 1; return acc; }, {});
+
+    res.json({ total: students.length, counts, students: summary });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { registerStudent, getAllStudents, getStudent, getPaymentSummary };
