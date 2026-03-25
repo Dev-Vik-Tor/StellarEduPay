@@ -28,6 +28,7 @@ const {
 } = require('../middleware/validate');
 const { validateStudentIdParam, validateVerifyPayment } = require('../middleware/validate');
 const { resolveSchool } = require('../middleware/schoolContext');
+const idempotency = require('../middleware/idempotency');
 
 router.get('/accepted-assets', getAcceptedAssets);
 router.get('/limits', getPaymentLimitsEndpoint);
@@ -49,6 +50,7 @@ router.use(resolveSchool);
 
 // Static routes before parameterized ones
 router.get('/accepted-assets',                    getAcceptedAssets);
+router.get('/limits',                             getPaymentLimitsEndpoint);
 router.get('/overpayments',                       getOverpayments);
 router.get('/suspicious',                         getSuspiciousPayments);
 router.get('/pending',                            getPendingPayments);
@@ -57,8 +59,8 @@ router.get('/rates',                              getExchangeRates);
 router.get('/balance/:studentId',                 validateStudentIdParam, getStudentBalance);
 router.get('/instructions/:studentId',            validateStudentIdParam, getPaymentInstructions);
 
-router.post('/intent',                            createPaymentIntent);
-router.post('/verify',                            validateVerifyPayment, verifyPayment);
+router.post('/intent',                            idempotency, createPaymentIntent);
+router.post('/verify',                            idempotency, validateVerifyPayment, verifyPayment);
 router.post('/sync',                              syncAllPayments);
 router.post('/finalize',                          finalizePayments);
 

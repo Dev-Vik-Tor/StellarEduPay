@@ -286,9 +286,8 @@ async function verifyTransaction(txHash) {
   const amount = normalizeAmount(payOp.amount);
 
 /**
- * Verify a single transaction hash against the Stellar network and school wallet.
- * Throws structured errors for all failure cases so the controller can handle them uniformly.
  * Verify a single transaction hash against a specific school wallet.
+ * Throws structured errors for all failure cases so the controller can handle them uniformly.
  *
  * @param {string} txHash        - 64-char hex transaction hash
  * @param {string} walletAddress - the school's Stellar wallet address
@@ -297,7 +296,6 @@ async function verifyTransaction(txHash) {
 async function verifyTransaction(txHash, walletAddress) {
   const tx = await server.transactions().transaction(txHash).call();
 
-  // 1. Validate transaction success status
   // 1. Validate transaction success
   if (tx.successful === false) {
     const err = new Error('Transaction was not successful on the Stellar network');
@@ -353,8 +351,7 @@ async function verifyTransaction(txHash, walletAddress) {
     throw err;
   }
 
-  // 6. Look up the student to validate fee amount
-  // 5. Look up student to validate fee (student lookup is not school-scoped here
+  // 6. Look up student to validate fee (student lookup is not school-scoped here
   //    since memo = studentId; recordPayment caller passes schoolId explicitly)
   const student = await Student.findOne({ studentId: memo });
   const feeAmount = student ? student.feeAmount : null;
@@ -382,11 +379,7 @@ async function verifyTransaction(txHash, walletAddress) {
 async function finalizeConfirmedPayments() {
   const pending = await Payment.find({ confirmationStatus: 'pending_confirmation', isSuspicious: false });
 /**
- * Fetch recent transactions to the school wallet and record new payments.
- */
-async function syncPayments() {
  * Fetch recent transactions for a specific school wallet and record new payments.
- * Replaces the old syncPayments() which used a global SCHOOL_WALLET constant.
  *
  * @param {object} school - School document with { schoolId, stellarAddress }
  */
@@ -409,7 +402,6 @@ async function syncPaymentsForSchool(school) {
 
     const { payOp, memo } = valid;
 
-    const intent = await PaymentIntent.findOne({ memo, status: 'pending' });
     const intent = await PaymentIntent.findOne({ schoolId, memo, status: 'pending' });
     if (!intent) continue;
 
@@ -417,11 +409,10 @@ async function syncPaymentsForSchool(school) {
     if (!student) continue;
 
     const paymentAmount = parseFloat(payOp.amount);
-    
+
     // Validate payment amount is within configured limits
     const limitValidation = validatePaymentAmount(paymentAmount);
     if (!limitValidation.valid) {
-      // Skip payments outside limits during sync
       continue;
     }
 
@@ -442,13 +433,9 @@ async function syncPaymentsForSchool(school) {
     const remaining = parseFloat((student.feeAmount - cumulativeTotal).toFixed(7));
 
     let cumulativeStatus;
-    if (cumulativeTotal < student.feeAmount) {
-      cumulativeStatus = 'underpaid';
-    } else if (cumulativeTotal > student.feeAmount) {
-      cumulativeStatus = 'overpaid';
-    } else {
-      cumulativeStatus = 'valid';
-    }
+    if (cumulativeTotal < student.feeAmount) cumulativeStatus = 'underpaid';
+    else if (cumulativeTotal > student.feeAmount) cumulativeStatus = 'overpaid';
+    else cumulativeStatus = 'valid';
 
     const excessAmount = cumulativeStatus === 'overpaid'
       ? parseFloat((cumulativeTotal - student.feeAmount).toFixed(7))
@@ -543,7 +530,7 @@ module.exports = {
   normalizeAmount,
   extractValidPayment,
   detectMemoCollision,
-  finalizeConfirmedPayments,
   checkConfirmationStatus,
   recordPayment,
+  finalizeConfirmedPayments,
 };
