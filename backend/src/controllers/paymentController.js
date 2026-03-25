@@ -27,6 +27,9 @@ const {
   finalizeConfirmedPayments,
 } = require('../services/stellarService');
 const { queueForRetry } = require('../services/retryService');
+const { SCHOOL_WALLET, ACCEPTED_ASSETS, server } = require('../config/stellarConfig');
+const StellarSdk = require('@stellar/stellar-sdk');
+
 const { SCHOOL_WALLET, ACCEPTED_ASSETS } = require('../config/stellarConfig');
 const { getPaymentLimits } = require('../utils/paymentLimits');
 const crypto = require('crypto');
@@ -90,7 +93,7 @@ async function getPaymentInstructions(req, res, next) {
   }
 }
 
-// POST /api/payments/intent
+// POST /api/payments/intent  (Step 1: Record intent)
 async function createPaymentIntent(req, res, next) {
   try {
     const { schoolId } = req;
@@ -110,12 +113,90 @@ async function createPaymentIntent(req, res, next) {
     }
 
     const memo = crypto.randomBytes(4).toString('hex').toUpperCase();
+    
+    // We now use the Payment model to track the initial 'PENDING' intent.
+    const payment = await Payment.create({
     const intent = await PaymentIntent.create({
       schoolId,
       studentId,
       amount: student.feeAmount,
       memo,
-      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+      status: 'PENDING',
+      startedAt: new Date(),
+    });
+
+    res.status(201).json({
+      memo: payment.memo,
+      amount: payment.amount,
+      studentId: payment.studentId,
+      paymentId: payment._id
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/payments/submit  (Step 2 & 3: Submit and Track XDR)
+async function submitTransaction(req, res, next) {
+  try {
+    const { xdr } = req.body;
+    if (!xdr) {
+      return res.status(400).json({ error: 'Missing xdr parameter' });
+    }
+
+    // Decode the transaction from the base64 XDR string
+    const tx = new StellarSdk.Transaction(xdr, StellarSdk.Networks.TESTNET); // or networkPassphrase
+    const transactionHash = tx.hash().toString('hex');
+    const memo = tx.memo.value ? tx.memo.value.toString() : null;
+
+    if (!memo) {
+      return res.status(400).json({ error: 'Transaction must include the student ID as a memo' });
+    }
+
+    // Step 2: Capture XDR/Hash before submission
+    // Update or create the Payment record with SUBMITTED status
+    let paymentRecord = await Payment.findOne({ memo, status: 'PENDING' }).sort({ createdAt: -1 });
+    if (!paymentRecord) {
+      paymentRecord = new Payment({
+        studentId: memo,
+        memo: memo,
+        amount: 0, // Gets corrected on success
+      });
+    }
+
+    paymentRecord.transactionHash = transactionHash;
+    paymentRecord.status = 'SUBMITTED';
+    paymentRecord.submittedAt = new Date();
+    // Saving the record before sending to the network ensures a robust audit trail
+    await paymentRecord.save();
+
+    let txResponse;
+    try {
+      // Step 3: Send to the Stellar network
+      txResponse = await server.submitTransaction(tx);
+    } catch (err) {
+      paymentRecord.status = 'FAILED';
+      let errorReason = err.message;
+      if (err.response && err.response.data && err.response.data.extras) {
+        errorReason = err.response.data.extras.result_codes.transaction;
+      }
+      paymentRecord.suspicionReason = errorReason;
+      await paymentRecord.save();
+      return res.status(400).json({ error: 'Transaction submission failed', code: errorReason });
+    }
+
+    // Success
+    paymentRecord.status = 'SUCCESS';
+    paymentRecord.confirmedAt = new Date();
+    paymentRecord.ledgerSequence = txResponse.ledger;
+    // (Amount should be extracted from operations, but verifyTransaction does that better)
+    await paymentRecord.save();
+
+    res.json({
+      verified: true,
+      hash: transactionHash,
+      ledger: txResponse.ledger,
+      status: 'SUCCESS'
     });
     res.status(201).json(intent);
   } catch (err) {
@@ -152,6 +233,7 @@ async function verifyPayment(req, res, next) {
     const { schoolId } = req;
     const { txHash } = req.body;
 
+    const existing = await Payment.findOne({ transactionHash: txHash, status: 'SUCCESS' });
     // Check if we've already recorded this transaction
     const existing = await Payment.findOne({ txHash });
     if (existing) {
@@ -165,6 +247,8 @@ async function verifyPayment(req, res, next) {
       // Pass this school's wallet address so verifyTransaction checks the right destination
       result = await verifyTransaction(txHash, req.school.stellarAddress);
     } catch (stellarErr) {
+      const knownFailCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
+      if (knownFailCodes.includes(stellarErr.code)) {
       // Record a failed payment entry for known failure codes so we have an audit trail
       if (PERMANENT_FAIL_CODES.includes(stellarErr.code)) {
         await Payment.create({
@@ -172,10 +256,22 @@ async function verifyPayment(req, res, next) {
         await Payment.create({
           schoolId,
           studentId: 'unknown',
-          txHash,
+          transactionHash: txHash,
           amount: 0,
-          status: 'failed',
+          status: 'FAILED',
           feeValidationStatus: 'unknown',
+        }).catch(() => {});
+      }
+      return next(knownFailCodes.includes(stellarErr.code) ? stellarErr : wrapStellarError(stellarErr));
+    }
+
+    if (!result) {
+      return res.status(404).json({
+        error: 'Transaction found but contains no valid payment to the school wallet',
+        code: 'NOT_FOUND',
+      });
+    }
+
         }).catch(() => {}); // non-fatal — don't mask the original error
         return next(stellarErr);
       }
@@ -213,11 +309,12 @@ async function verifyPayment(req, res, next) {
       feeAmount: result.expectedAmount || result.feeAmount,
       feeValidationStatus: result.feeValidation.status,
       excessAmount: result.feeValidation.excessAmount,
-      status: 'confirmed',
+      status: 'SUCCESS',
       memo: result.memo,
       senderAddress: result.senderAddress || null,
-      ledger: result.ledger || null,
+      ledgerSequence: result.ledger || null,
       confirmationStatus: 'confirmed',
+      confirmedAt: result.date ? new Date(result.date) : now,
       confirmedAt: result.date ? new Date(result.date) : new Date(),
       verifiedAt: now,
     });
@@ -257,6 +354,21 @@ async function verifyPayment(req, res, next) {
       },
     });
   } catch (err) {
+    // Retry queue logic for transient errors
+    const failCodes = ['TX_FAILED', 'MISSING_MEMO', 'INVALID_DESTINATION', 'UNSUPPORTED_ASSET'];
+    if (failCodes.includes(err.code)) {
+      if (PERMANENT_FAIL_CODES.includes(err.code)) {
+        await Payment.create({ studentId: 'unknown', transactionHash: req.body.txHash, amount: 0, status: 'FAILED' }).catch(() => {});
+        return next(err);
+      }
+
+      await queueForRetry(req.body.txHash, req.body.studentId || null, err.message);
+      return res.status(202).json({
+        message: 'Stellar network is temporarily unavailable. Your transaction has been queued.',
+        txHash: req.body.txHash,
+        status: 'queued_for_retry',
+      });
+    }
     next(err);
   }
 }
@@ -395,6 +507,7 @@ async function getStudentBalance(req, res, next) {
     if (!student) return res.status(404).json({ error: 'Student not found', code: 'NOT_FOUND' });
 
     const result = await Payment.aggregate([
+      { $match: { studentId, status: 'SUCCESS' } },
       { $match: { schoolId, studentId } },
       { $group: { _id: null, totalPaid: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
@@ -544,5 +657,7 @@ module.exports = {
   getSuspiciousPayments,
   getPendingPayments,
   getRetryQueue,
+  submitTransaction,
+};
   getExchangeRates,
 };

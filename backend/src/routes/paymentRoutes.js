@@ -5,6 +5,7 @@ const router = express.Router();
 const {
   getPaymentInstructions,
   createPaymentIntent,
+  submitTransaction,
   verifyPayment,
   syncAllPayments,
   finalizePayments,
@@ -18,6 +19,7 @@ const {
   getRetryQueue,
   getExchangeRates,
 } = require('../controllers/paymentController');
+
 const { validateStudentIdParam, validateVerifyPayment } = require('../middleware/validate');
 const { resolveSchool } = require('../middleware/schoolContext');
 
@@ -33,6 +35,7 @@ router.get('/instructions/:studentId', validateStudentIdParam, getPaymentInstruc
 
 // POST routes
 router.post('/intent', createPaymentIntent);
+router.post('/submit', submitTransaction);
 router.post('/verify', validateVerifyPayment, verifyPayment);
 router.post('/sync', syncAllPayments);
 router.post('/finalize', finalizePayments);
@@ -54,6 +57,10 @@ router.post('/verify',                            validateVerifyPayment, verifyP
 router.post('/sync',                              syncAllPayments);
 router.post('/finalize',                          finalizePayments);
 
+// Parameterized routes
+router.get('/balance/:studentId', validateStudentIdParam, getStudentBalance);
+router.get('/instructions/:studentId', validateStudentIdParam, getPaymentInstructions);
+router.get('/:studentId', validateStudentIdParam, getStudentPayments);
 // Parameterized route last
 router.get('/:studentId',                         validateStudentIdParam, getStudentPayments);
 
