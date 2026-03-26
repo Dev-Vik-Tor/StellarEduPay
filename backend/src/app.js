@@ -19,6 +19,7 @@ const database = require('./config/database');
 const { concurrentPaymentProcessor } = require('./services/concurrentPaymentProcessor');
 const { createConcurrentRequestMiddleware } = require('./middleware/concurrentRequestHandler');
 const { requestLogger } = require('./middleware/requestLogger');
+const { globalErrorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
 
 const app = express();
@@ -182,29 +183,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Global error handler
-app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-  const statusMap = {
-    TX_FAILED:              400,
-    MISSING_MEMO:           400,
-    INVALID_DESTINATION:    400,
-    UNSUPPORTED_ASSET:      400,
-    VALIDATION_ERROR:       400,
-    UNDERPAID:              400,
-    MISSING_SCHOOL_CONTEXT: 400,
-    MISSING_IDEMPOTENCY_KEY:400,
-    DUPLICATE_TX:           409,
-    DUPLICATE_SCHOOL:       409,
-    DUPLICATE_STUDENT:      409,
-    NOT_FOUND:              404,
-    SCHOOL_NOT_FOUND:       404,
-    STELLAR_NETWORK_ERROR:  502,
-    REQUEST_TIMEOUT:        503,
-  };
-  const status = statusMap[err.code] || err.status || 500;
-  logger.error('Request error', { code: err.code || 'INTERNAL_ERROR', message: err.message, requestId: req.requestId, status });
-  res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
-});
+// 404 handler for undefined routes
+app.use(notFoundHandler);
+
+// Global error handler (must be last)
+app.use(globalErrorHandler);
 
 const PORT = config.PORT;
 const server = app.listen(PORT, () => logger.info(`Server running on port ${PORT}`));
