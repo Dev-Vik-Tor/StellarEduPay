@@ -18,6 +18,14 @@ const {
   finalizeConfirmedPayments,
   validatePaymentWithDynamicFee,     // ← New dynamic fee function
 } = require('../services/stellarService');
+const { queueForRetry } = require('../services/retryService');
+const { SCHOOL_WALLET, ACCEPTED_ASSETS, server } = require('../config/stellarConfig');
+const StellarSdk = require('@stellar/stellar-sdk');
+const { validateTransactionHash } = require('../utils/hashValidator');
+
+const { SCHOOL_WALLET, ACCEPTED_ASSETS } = require('../config/stellarConfig');
+const { getPaymentLimits } = require('../utils/paymentLimits');
+const crypto = require('crypto');
 
 const { queueForRetry } = require('../services/retryService');
 const { getPaymentLimits } = require('../utils/paymentLimits');
@@ -102,6 +110,468 @@ async function createPaymentIntent(req, res, next) {
 }
 
 // ====================== MAIN PAGINATED ENDPOINT (Improved) ======================
+// POST /api/payments/submit  (Step 2 & 3: Submit and Track XDR)
+async function submitTransaction(req, res, next) {
+  try {
+    const { xdr } = req.body;
+    if (!xdr) {
+      return res.status(400).json({ error: 'Missing xdr parameter' });
+    }
+
+    // Decode the transaction from the base64 XDR string
+    const tx = new StellarSdk.Transaction(xdr, require('../config/stellarConfig').networkPassphrase);
+    const transactionHash = tx.hash().toString('hex');
+    
+    // Validate transaction hash format
+    const hashValidation = validateTransactionHash(transactionHash);
+    if (!hashValidation.valid) {
+      const err = new Error(hashValidation.error);
+      err.code = hashValidation.code;
+      return next(err);
+    }
+    
+    const normalizedHash = hashValidation.normalized;
+    const memo = tx.memo.value ? tx.memo.value.toString() : null;
+
+    if (!memo) {
+      return res.status(400).json({ error: 'Transaction must include the student ID as a memo' });
+    }
+
+    // Step 2: Capture XDR/Hash before submission
+    // Update or create the Payment record with SUBMITTED status
+    let paymentRecord = await Payment.findOne({ memo, status: 'PENDING' }).sort({ createdAt: -1 });
+    if (!paymentRecord) {
+      const studentObj = await Student.findOne({ studentId: memo });
+      if (!studentObj) {
+        return res.status(404).json({ error: 'Associated student not found in the database. Cannot process transaction.' });
+      }
+      paymentRecord = new Payment({
+        studentId: studentObj._id,
+        memo: memo,
+        amount: 0, // Gets corrected on success
+      });
+    }
+
+    paymentRecord.transactionHash = normalizedHash;
+    paymentRecord.status = 'SUBMITTED';
+    paymentRecord.submittedAt = new Date();
+    // Saving the record before sending to the network ensures a robust audit trail
+    await paymentRecord.save();
+
+    let txResponse;
+    try {
+      // Step 3: Send to the Stellar network
+      txResponse = await server.submitTransaction(tx);
+    } catch (err) {
+      paymentRecord.status = 'FAILED';
+      let errorReason = err.message;
+      if (err.response && err.response.data && err.response.data.extras) {
+        errorReason = err.response.data.extras.result_codes.transaction;
+      }
+      paymentRecord.suspicionReason = errorReason;
+      await paymentRecord.save();
+      return res.status(400).json({ error: 'Transaction submission failed', code: errorReason });
+    }
+
+    // Success
+    paymentRecord.status = 'SUCCESS';
+    paymentRecord.confirmedAt = new Date();
+    paymentRecord.ledgerSequence = txResponse.ledger;
+    // (Amount should be extracted from operations, but verifyTransaction does that better)
+    await paymentRecord.save();
+
+    res.json({
+      verified: true,
+      hash: normalizedHash,
+      ledger: txResponse.ledger,
+      status: 'SUCCESS'
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/payments/verify
+ *
+ * Accepts a Stellar transaction hash, queries the Stellar network to verify
+ * the payment, records it if valid, and returns the verification result.
+ *
+ * Request body: { txHash: string }  — 64-char hex string (validated by middleware)
+ *
+ * Error responses follow the global error handler format:
+ *   { error: string, code: string }
+ *   400 — TX_FAILED | MISSING_MEMO | INVALID_DESTINATION | UNSUPPORTED_ASSET | AMOUNT_TOO_LOW | AMOUNT_TOO_HIGH
+ *   409 — DUPLICATE_TX
+ *   404 — transaction not found / no valid payment
+ *   502 — STELLAR_NETWORK_ERROR
+ */
+async function verifyPayment(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { txHash } = req.body;
+
+    // Validate transaction hash format
+    const hashValidation = validateTransactionHash(txHash);
+    if (!hashValidation.valid) {
+      const err = new Error(hashValidation.error);
+      err.code = hashValidation.code;
+      return next(err);
+    }
+
+    // Use normalized hash
+    const normalizedHash = hashValidation.normalized;
+
+    // Check if we've already recorded this transaction
+    const existing = await Payment.findOne({ txHash: normalizedHash });
+    if (existing) {
+      const err = new Error('Transaction ' + normalizedHash + ' has already been processed');
+      err.code = 'DUPLICATE_TX';
+      return next(err);
+    }
+
+    let result;
+    try {
+      result = await verifyTransaction(normalizedHash, req.school.stellarAddress);
+    } catch (stellarErr) {
+      // Record a failed payment entry for known failure codes so we have an audit trail
+      if (PERMANENT_FAIL_CODES.includes(stellarErr.code)) {
+        await Payment.create({
+          schoolId,
+          studentId: 'unknown',
+          txHash: normalizedHash,
+          amount: 0,
+          status: 'FAILED',
+          feeValidationStatus: 'unknown',
+        }).catch(() => {});
+        return next(stellarErr);
+      }
+
+      await queueForRetry(normalizedHash, req.body.studentId || null, stellarErr.message, schoolId);
+      return res.status(202).json({
+        message: 'Stellar network is temporarily unavailable. Your transaction has been queued and will be verified automatically.',
+        txHash: normalizedHash,
+        status: 'queued_for_retry',
+      });
+    }
+
+    if (!result) {
+      return res.status(404).json({
+        error: 'Transaction found but contains no valid payment to this school wallet',
+        code: 'NOT_FOUND',
+      });
+    }
+
+    const studentStrId = result.studentId || result.memo;
+    const studentObj = await Student.findOne({ studentId: studentStrId });
+    if (!studentObj) {
+      return res.status(404).json({ error: 'Associated student not found. Cannot record transaction.' });
+    }
+
+    // Reject if the payment intent has expired
+    const intent = await PaymentIntent.findOne({ memo: result.memo, schoolId });
+    if (intent) {
+      if (intent.expiresAt && intent.expiresAt < new Date()) {
+        await PaymentIntent.findByIdAndUpdate(intent._id, { status: 'expired' });
+        const err = new Error('Payment intent has expired. Please request new payment instructions.');
+        err.code = 'INTENT_EXPIRED';
+        err.status = 410;
+        return next(err);
+      }
+    }
+
+    // Persist the verified payment
+    const now = new Date();
+
+    // Reject underpaid transactions — do not record as SUCCESS
+    if (result.feeValidation.status === 'underpaid') {
+      const err = new Error(result.feeValidation.message);
+      err.code = 'UNDERPAID';
+      err.status = 400;
+      err.details = {
+        paid: result.amount,
+        required: result.feeAmount,
+        shortfall: parseFloat((result.feeAmount - result.amount).toFixed(7)),
+      };
+      return next(err);
+    }
+
+    await recordPayment({
+      schoolId,
+      studentId: result.studentId || result.memo,
+      txHash: result.hash,
+      amount: result.amount,
+      feeAmount: result.feeAmount,
+      feeValidationStatus: result.feeValidation.status,
+      excessAmount: result.feeValidation.excessAmount,
+      networkFee: result.networkFee, // Store the extracted network fee
+      status: 'SUCCESS',
+      memo: result.memo,
+      senderAddress: result.senderAddress || null,
+      ledgerSequence: result.ledger || null,
+      confirmationStatus: 'confirmed',
+      confirmedAt: result.date ? new Date(result.date) : now,
+      verifiedAt: now,
+    });
+
+    const targetCurrency = req.school.localCurrency || 'USD';
+    const conversion = await convertToLocalCurrency(result.amount, result.assetCode || 'XLM', targetCurrency);
+
+    res.json({
+      verified: true,
+      hash: result.hash,
+      memo: result.memo,
+      studentId: result.studentId || result.memo,
+      amount: result.amount,
+      assetCode: result.assetCode,
+      assetType: result.assetType,
+      feeAmount: result.feeAmount,
+      feeValidation: result.feeValidation,
+      networkFee: result.networkFee,
+      date: result.date,
+      localCurrency: {
+        amount:        conversion.available ? conversion.localAmount : null,
+        currency:      conversion.currency,
+        rate:          conversion.rate,
+        rateTimestamp: conversion.rateTimestamp,
+        available:     conversion.available,
+      },
+    });
+  } catch (err) {
+    // Retry queue logic for transient errors
+    if (PERMANENT_FAIL_CODES.includes(err.code)) {
+      // Ensure no 'orphan' payments can be created in the system
+      return next(err);
+    }
+
+    await queueForRetry(req.body.txHash, req.body.studentId || null, err.message);
+    return res.status(202).json({
+      message: 'Stellar network is temporarily unavailable. Your transaction has been queued.',
+      txHash: req.body.txHash,
+      status: 'queued_for_retry',
+    });
+  }
+}
+
+async function syncAllPayments(req, res, next) {
+  try {
+    await syncPaymentsForSchool(req.school);
+    res.json({ message: 'Sync complete' });
+  } catch (err) {
+    next(wrapStellarError(err));
+  }
+}
+
+async function finalizePayments(req, res, next) {
+  try {
+    await finalizeConfirmedPayments(req.schoolId);
+    res.json({ message: 'Finalization complete' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getStudentPayments(req, res, next) {
+  try {
+    const { studentId } = req.params;
+    const targetCurrency = req.school.localCurrency || 'USD';
+    const payments = await Payment
+      .find({ schoolId: req.schoolId, studentId: req.params.studentId })
+      .sort({ confirmedAt: -1 })
+      .lean();
+
+    const enriched = await Promise.all(
+      payments.map(p => enrichPaymentWithConversion(p, targetCurrency))
+    );
+    res.json(enriched);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getAcceptedAssets(req, res, next) {
+  try {
+    res.json({
+      assets: Object.values(ACCEPTED_ASSETS).map(a => ({
+        code: a.code,
+        type: a.type,
+        displayName: a.displayName,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/payments/limits
+async function getPaymentLimitsEndpoint(req, res, next) {
+  try {
+    const limits = getPaymentLimits();
+    res.json({
+      min: limits.min,
+      max: limits.max,
+      message: `Payment amounts must be between ${limits.min} and ${limits.max}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getOverpayments(req, res, next) {
+  try {
+    const overpayments = await Payment
+      .find({ schoolId: req.schoolId, feeValidationStatus: 'overpaid' })
+      .sort({ confirmedAt: -1 });
+    const totalExcess = overpayments.reduce((sum, p) => sum + (p.excessAmount || 0), 0);
+    res.json({ count: overpayments.length, totalExcess, overpayments });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getStudentBalance(req, res, next) {
+  try {
+    const { schoolId } = req;
+    const { studentId } = req.params;
+
+    const student = await Student.findOne({ schoolId, studentId });
+    if (!student) return res.status(404).json({ error: 'Student not found', code: 'NOT_FOUND' });
+
+    const result = await Payment.aggregate([
+      { $match: { schoolId, studentId } },
+      { $group: { _id: null, totalPaid: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]);
+
+    const totalPaid = result.length ? parseFloat(result[0].totalPaid.toFixed(7)) : 0;
+    const remainingBalance = parseFloat(Math.max(0, student.feeAmount - totalPaid).toFixed(7));
+    const excessAmount = totalPaid > student.feeAmount
+      ? parseFloat((totalPaid - student.feeAmount).toFixed(7))
+      : 0;
+
+    const targetCurrency = req.school.localCurrency || 'USD';
+    const [feeConv, paidConv, remainingConv] = await Promise.all([
+      convertToLocalCurrency(student.feeAmount, 'XLM', targetCurrency),
+      convertToLocalCurrency(totalPaid, 'XLM', targetCurrency),
+      convertToLocalCurrency(remainingBalance, 'XLM', targetCurrency),
+    ]);
+
+    const buildLocal = (conv) => conv.available
+      ? { amount: conv.localAmount, currency: conv.currency, rate: conv.rate, rateTimestamp: conv.rateTimestamp }
+      : null;
+
+    res.json({
+      studentId,
+      feeAmount: student.feeAmount,
+      totalPaid,
+      remainingBalance,
+      excessAmount,
+      feePaid: totalPaid >= student.feeAmount,
+      installmentCount: result.length ? result[0].count : 0,
+      localCurrency: {
+        currency:         targetCurrency,
+        available:        feeConv.available,
+        rateTimestamp:    feeConv.rateTimestamp,
+        feeAmount:        buildLocal(feeConv),
+        totalPaid:        buildLocal(paidConv),
+        remainingBalance: buildLocal(remainingConv),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getSuspiciousPayments(req, res, next) {
+  try {
+    const suspicious = await Payment
+      .find({ schoolId: req.schoolId, isSuspicious: true })
+      .sort({ confirmedAt: -1 });
+    res.json({ count: suspicious.length, suspicious });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getPendingPayments(req, res, next) {
+  try {
+    const pending = await Payment
+      .find({ schoolId: req.schoolId, confirmationStatus: 'pending_confirmation' })
+      .sort({ confirmedAt: -1 });
+    res.json({ count: pending.length, pending });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/payments/retry-queue
+async function getRetryQueue(req, res) {
+  try {
+    if (!PendingVerification || typeof PendingVerification.find !== 'function') {
+      return res.json({
+        pending: { count: 0, items: [] },
+        dead_letter: { count: 0, items: [] },
+        recently_resolved: { count: 0, items: [] },
+      });
+    }
+
+    const [pending, deadLetter, resolved] = await Promise.all([
+      PendingVerification.find({ schoolId: req.schoolId, status: 'pending' }).sort({ nextRetryAt: 1 }),
+      PendingVerification.find({ schoolId: req.schoolId, status: 'dead_letter' }).sort({ updatedAt: -1 }),
+      PendingVerification.find({ schoolId: req.schoolId, status: 'resolved' }).sort({ resolvedAt: -1 }).limit(20),
+    ]);
+
+    res.json({
+      pending:           { count: pending.length, items: pending },
+      dead_letter:       { count: deadLetter.length, items: deadLetter },
+      recently_resolved: { count: resolved.length, items: resolved },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/payments/rates
+async function getExchangeRates(req, res, next) {
+  try {
+    const targetCurrency = req.school.localCurrency || 'USD';
+    const { _getRates } = require('../services/currencyConversionService');
+    const rateEntry = await _getRates(targetCurrency);
+
+    if (!rateEntry) {
+      return res.json({
+        available: false,
+        currency: targetCurrency,
+        rates: null,
+        rateTimestamp: null,
+        message: 'Price feed is currently unavailable. Amounts are shown in XLM only.',
+      });
+    }
+
+    res.json({
+      available: true,
+      currency: targetCurrency,
+      rates: rateEntry.rates,
+      rateTimestamp: rateEntry.fetchedAt.toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ── #93 Transaction Filtering API ─────────────────────────────────────────────
+/**
+ * GET /api/payments/
+ *
+ * Query params (all optional):
+ *   startDate  — ISO date string (e.g. 2026-01-01)
+ *   endDate    — ISO date string (e.g. 2026-12-31)
+ *   minAmount  — minimum payment amount (inclusive)
+ *   maxAmount  — maximum payment amount (inclusive)
+ *   status     — payment status filter (e.g. SUCCESS, FAILED, PENDING)
+ *   studentId  — filter by student ID
+ *   page       — pagination page (default 1)
+ *   limit      — page size (default 50, max 200)
+ */
 async function getAllPayments(req, res, next) {
   try {
     const { schoolId } = req;
