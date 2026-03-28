@@ -54,16 +54,19 @@ export default function Dashboard() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  useEffect(() => {
-    getSyncStatus()
+  const fetchStudents = useCallback((p = page) => {
+    setLoading(true);
+    setError(null);
+    return getStudents(p, PAGE_SIZE)
       .then(({ data }) => {
         setLastSyncAt(data.lastSyncAt);
         setError(null);
       })
       .catch(() => setError("Failed to load sync status. Please try again."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Initial load: sync status + first page of students
   useEffect(() => {
     setSummaryLoading(true);
     getPaymentSummary()
@@ -177,6 +180,7 @@ export default function Dashboard() {
           />
         </div>
 
+        {/* Toast */}
         {syncMessage && (
           <p
             style={{
@@ -408,3 +412,13 @@ export default function Dashboard() {
     </>
   );
 }
+
+const pageBtnStyle = {
+  padding: '0.4rem 0.9rem',
+  fontSize: '0.88rem',
+  background: '#1a1a2e',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 6,
+  cursor: 'pointer',
+};
