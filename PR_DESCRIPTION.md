@@ -1,10 +1,10 @@
-# Write Architecture Documentation
+# Write API Specification Documentation
 
-Closes #228
+Closes #231
 
 ## Summary
 
-`docs/architecture.md` had only a brief stub. This PR rewrites it as a complete reference for new contributors covering every major component and their interactions.
+`docs/api-spec.md` had a partial, inconsistently formatted draft with duplicated sections and missing entire route groups. This PR rewrites it as a complete, accurate API reference derived directly from the route files.
 # Add Dockerfile for Frontend Service
 
 Closes #235
@@ -19,20 +19,21 @@ Closes #235
 
 | File | Description |
 | ---- | ----------- |
-| [`docs/architecture.md`](docs/architecture.md) | Full rewrite — diagrams, data flow, service roles, schema relationships |
+| [`docs/api-spec.md`](docs/api-spec.md) | Full rewrite — all endpoints, request/response schemas, error codes |
 
 ## What's Documented
 
-- High-level ASCII component diagram (browser → frontend → backend → MongoDB + Stellar)
-- File-level component map for both frontend and backend
-- Step-by-step data flow from fee setup through payment confirmation (5 steps with code paths)
-- Role of every backend service: `stellarService`, `transactionService`, `retryService`, `consistencyService`, `reminderService`
-- All controllers and their route ownership
-- All middleware and their purpose
-- MongoDB schema relationships with an ERD-style ASCII diagram and key constraints
-- Background worker table (interval, purpose, start function)
-- Multi-school tenancy model
-- Error handling and resilience patterns (retry, circuit breaker, idempotency, graceful shutdown)
+- Schools — 5 endpoints (CRUD + deactivate)
+- Students — 8 endpoints including bulk import, payment summary, overdue list; query params for pagination and filtering
+- Fee Structures — 4 endpoints
+- Payments — 22 endpoints covering instructions, intent, verify, submit, sync, finalize, history, balance, assets, limits, rates, overpayments, suspicious, pending, retry queue, DLQ, receipt, SSE stream, lock/unlock
+- Reports — JSON and CSV report with query parameters, dashboard summary
+- Disputes — flag, list, get, resolve
+- Reminders — trigger, preview, opt-out (all admin-only)
+- Retry Queue — stats, health, job management, pause/resume, manual queue
+- Health check
+- Full error code reference table (17 codes with HTTP status and description)
+- Authentication, school context, and idempotency sections
 | [`frontend/Dockerfile`](frontend/Dockerfile) | Multi-stage Docker build for the Next.js frontend |
 | [`frontend/next.config.js`](frontend/next.config.js) | Enables `output: 'standalone'` required by the Docker runner stage |
 
@@ -58,9 +59,9 @@ Closes #235
 
 ## Implementation Details
 
-- [x] A new developer can understand the full system architecture from this document
-- [x] Data flow from payment initiation to confirmation is clearly described
-- [x] All major components and their interactions are covered
+- [x] All endpoints documented with request/response examples
+- [x] Error cases documented for each endpoint
+- [x] Document is accurate and matches the actual implementation
 - Two-stage build: `builder` compiles the Next.js app, `runner` serves only the standalone output (smaller final image)
 - `NEXT_PUBLIC_API_URL` is passed as a `ARG`/`ENV` during the build stage — Next.js inlines `NEXT_PUBLIC_*` vars at compile time, so a runtime `environment:` entry alone is not sufficient
 - Runs as a non-root user (`appuser`) for security
