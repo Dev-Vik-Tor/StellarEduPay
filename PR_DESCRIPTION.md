@@ -1,13 +1,10 @@
-# Transaction Fee Tracking
+# Write API Specification Documentation
+
+Closes #231
 
 ## Summary
 
-Track network fees associated with each payment. Extract fees from Stellar transactions, store them in the database, and make them visible in the payment records.
-
-## Tasks
-
-- [x] Extract fee from transaction
-- [x] Store in database
+`docs/api-spec.md` had a partial, inconsistently formatted draft with duplicated sections and missing entire route groups. This PR rewrites it as a complete, accurate API reference derived directly from the route files.
 
 ## Changes
 
@@ -15,26 +12,24 @@ Track network fees associated with each payment. Extract fees from Stellar trans
 
 | File | Description |
 | ---- | ----------- |
-| [`backend/src/models/paymentModel.js`](backend/src/models/paymentModel.js) | Added `networkFee` field |
-| [`backend/src/services/stellarService.js`](backend/src/services/stellarService.js) | Added fee extraction from Stellar transactions |
-| [`backend/src/controllers/paymentController.js`](backend/src/controllers/paymentController.js) | Stores and returns network fees in API |
+| [`docs/api-spec.md`](docs/api-spec.md) | Full rewrite — all endpoints, request/response schemas, error codes |
 
-### New Files
+## What's Documented
 
-| File | Description |
-| ---- | ----------- |
-| [`test_fee_tracking.js`](test_fee_tracking.js) | Integration test |
-| [`verify_fee_tracking.js`](verify_fee_tracking.js) | Verification script |
+- Schools — 5 endpoints (CRUD + deactivate)
+- Students — 8 endpoints including bulk import, payment summary, overdue list; query params for pagination and filtering
+- Fee Structures — 4 endpoints
+- Payments — 22 endpoints covering instructions, intent, verify, submit, sync, finalize, history, balance, assets, limits, rates, overpayments, suspicious, pending, retry queue, DLQ, receipt, SSE stream, lock/unlock
+- Reports — JSON and CSV report with query parameters, dashboard summary
+- Disputes — flag, list, get, resolve
+- Reminders — trigger, preview, opt-out (all admin-only)
+- Retry Queue — stats, health, job management, pause/resume, manual queue
+- Health check
+- Full error code reference table (17 codes with HTTP status and description)
+- Authentication, school context, and idempotency sections
 
 ## Acceptance Criteria
 
-- [x] Fees are recorded and visible
-
-## Implementation
-
-Network fees are extracted from Stellar transactions using:
-```javascript
-const networkFee = parseFloat(tx.fee_paid || '0') / 10000000;
-```
-
-The fees are stored in the payment record and returned in API responses.
+- [x] All endpoints documented with request/response examples
+- [x] Error cases documented for each endpoint
+- [x] Document is accurate and matches the actual implementation
