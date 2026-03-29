@@ -1,14 +1,12 @@
 import '../styles/globals.css';
 import Navbar from '../components/Navbar';
-import '../styles/globals.css';
+import ErrorBoundary from '../components/ErrorBoundary';
 
 export default function App({ Component, pageProps }) {
   return (
-    <>
+    <ErrorBoundary>
       <Navbar />
-      <main className="app-container">
-        <Component {...pageProps} />
-      </main>
-    </>
+      <Component {...pageProps} />
+    </ErrorBoundary>
   );
 }
