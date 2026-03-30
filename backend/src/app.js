@@ -20,15 +20,18 @@ const { startConsistencyScheduler }                                   = require(
 const { startReminderScheduler, stopReminderScheduler }               = require('./services/reminderService');
 const { startWorker: startTxQueueWorker, stopWorker: stopTxQueueWorker } = require('./services/transactionQueueService');
 const { initializeRetryQueue, setupMonitoring }                       = require('./config/retryQueueSetup');
-const { notFoundHandler }                                             = require('./middleware/errorHandler');
+const { notFoundHandler, globalErrorHandler }                         = require('./middleware/errorHandler');
 const { requestLogger }                                               = require('./middleware/requestLogger');
 const { createConcurrentRequestMiddleware }                           = require('./middleware/concurrentRequestHandler');
 const { runConsistencyCheck }                                         = require('./controllers/consistencyController');
 const { healthCheck }                                                 = require('./controllers/healthController');
 const logger                                                          = require('./utils/logger');
 
+const morgan = require('morgan');
+
 const app = express();
 
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(cors({
   origin: process.env.ALLOWED_ORIGIN || 'http://localhost:3000',
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
@@ -59,48 +62,56 @@ app.get('/health', healthCheck);
 
 // ── Error handling ────────────────────────────────────────────────────────────
 app.use(notFoundHandler);
-app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
-  const statusMap = {
-    TX_FAILED:               400,
-    MISSING_MEMO:            400,
-    INVALID_DESTINATION:     400,
-    UNSUPPORTED_ASSET:       400,
-    VALIDATION_ERROR:        400,
-    UNDERPAID:               400,
-    MISSING_SCHOOL_CONTEXT:  400,
-    MISSING_IDEMPOTENCY_KEY: 400,
-    DUPLICATE_TX:            409,
-    DUPLICATE_SCHOOL:        409,
-    DUPLICATE_STUDENT:       409,
-    NOT_FOUND:               404,
-    SCHOOL_NOT_FOUND:        404,
-    STELLAR_NETWORK_ERROR:   502,
-    REQUEST_TIMEOUT:         503,
-  };
-  const status = statusMap[err.code] || err.status || 500;
-  logger.error('Request error', { code: err.code || 'INTERNAL_ERROR', message: err.message, status });
-  res.status(status).json({ error: err.message, code: err.code || 'INTERNAL_ERROR' });
-});
+app.use(globalErrorHandler);
 
 // ── Database + service startup ────────────────────────────────────────────────
-mongoose.connect(config.MONGO_URI)
-  .then(async () => {
-    logger.info('MongoDB connected');
-    startPolling();
-    startConsistencyScheduler();
-    startRetryWorker();
-    startTxQueueWorker();
-    startReminderScheduler();
-
+async function connectWithRetry(maxAttempts = 5, baseDelayMs = 1000) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await initializeRetryQueue(app);
-      setupMonitoring(60000);
-      logger.info('All services initialized successfully');
-    } catch (error) {
-      logger.error('Failed to initialize retry queue system', { error: error.message });
+      await mongoose.connect(config.MONGO_URI);
+      logger.info('MongoDB connected');
+      return;
+    } catch (err) {
+      const delay = baseDelayMs * Math.pow(2, attempt - 1); // exponential backoff
+      logger.error(`MongoDB connection attempt ${attempt}/${maxAttempts} failed`, {
+        error: err.message,
+        retryInMs: attempt < maxAttempts ? delay : null,
+      });
+      if (attempt === maxAttempts) {
+        logger.error('Exhausted all MongoDB connection attempts — exiting');
+        process.exit(1);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-  })
-  .catch(err => logger.error('MongoDB error', { error: err.message }));
+  }
+}
+
+// Log disconnections after successful startup
+mongoose.connection.on('disconnected', () =>
+  logger.warn('MongoDB disconnected — waiting for reconnect')
+);
+mongoose.connection.on('reconnected', () =>
+  logger.info('MongoDB reconnected')
+);
+mongoose.connection.on('error', (err) =>
+  logger.error('MongoDB connection error', { error: err.message })
+);
+
+connectWithRetry().then(async () => {
+  startPolling();
+  startConsistencyScheduler();
+  startRetryWorker();
+  startTxQueueWorker();
+  startReminderScheduler();
+
+  try {
+    await initializeRetryQueue(app);
+    setupMonitoring(60000);
+    logger.info('All services initialized successfully');
+  } catch (error) {
+    logger.error('Failed to initialize retry queue system', { error: error.message });
+  }
+});
 
 // ── Server ────────────────────────────────────────────────────────────────────
 const PORT = config.PORT;

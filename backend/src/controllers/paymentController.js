@@ -103,7 +103,8 @@ async function getPaymentInstructions(req, res, next) {
             rateTimestamp: feeConversion.rateTimestamp,
           }
         : null,
-      note: "Include the payment intent memo exactly when sending payment.",
+      note: "Include the payment intent memo exactly when sending payment. The memo must be sent as a text memo (MEMO_TEXT). Other memo types (MEMO_ID, MEMO_HASH, MEMO_RETURN) will not be recognised and your payment will not be matched.",
+      memoType: "text",
     });
   } catch (err) {
     next(err);
@@ -661,7 +662,7 @@ async function getPendingPayments(req, res, next) {
 }
 
 // GET /api/payments/retry-queue
-async function getRetryQueue(req, res) {
+async function getRetryQueue(req, res, next) {
   try {
     if (
       !PendingVerification ||
@@ -694,7 +695,7 @@ async function getRetryQueue(req, res) {
       recently_resolved: { count: resolved.length, items: resolved },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err);
   }
 }
 
