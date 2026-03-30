@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import SyncButton from "../components/SyncButton";
 import AuditLog from "../components/AuditLog";
 import { getSyncStatus, getPaymentSummary } from "../services/api";
+import { useFiatConversion } from "../hooks/useFiatConversion";
 
 function timeAgo(isoString) {
   if (!isoString) return "Never";
@@ -19,27 +20,15 @@ export default function Dashboard() {
   const [syncMessage, setSyncMessage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
   const [summary, setSummary] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
 
-  const [students, setStudents] = useState([]);
-  const [studentsLoading, setStudentsLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [pages, setPages] = useState(1);
+  const xlmCollected = summary?.totalXlmCollected ?? 0;
+  const fiatConversion = useFiatConversion(xlmCollected);
 
-  const [summary, setSummary] = useState(null);
-  const [summaryLoading, setSummaryLoading] = useState(true);
-
-  // Search & filter state
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-
-  const fetchStudents = useCallback((p = page) => {
+  useEffect(() => {
     setLoading(true);
-    setError(null);
-    return getStudents(p, PAGE_SIZE)
+    getSyncStatus()
       .then(({ data }) => {
         setLastSyncAt(data.lastSyncAt);
         setError(null);
@@ -49,9 +38,8 @@ export default function Dashboard() {
         console.error(err);
       })
       .finally(() => setLoading(false));
-  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Initial load: sync status + first page of students
   useEffect(() => {
     setSummaryLoading(true);
     getPaymentSummary()
@@ -59,32 +47,6 @@ export default function Dashboard() {
       .catch(() => {})
       .finally(() => setSummaryLoading(false));
   }, []);
-
-  useEffect(() => {
-    getPaymentSummary()
-      .then(({ data }) => setSummary(data))
-      .catch(() => {})
-      .finally(() => setSummaryLoading(false));
-  }, []);
-
-  // Client-side filtering
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return students.filter((s) => {
-      const matchesSearch =
-        !q ||
-        (s.name || "").toLowerCase().includes(q) ||
-        (s.studentId || s.student_id || "").toLowerCase().includes(q);
-
-      const paid = s.hasPaid ?? s.has_paid ?? false;
-      const matchesStatus =
-        statusFilter === "all" ||
-        (statusFilter === "paid" && paid) ||
-        (statusFilter === "unpaid" && !paid);
-
-      return matchesSearch && matchesStatus;
-    });
-  }, [students, search, statusFilter]);
 
   function handleSyncComplete(data) {
     setLastSyncAt(new Date().toISOString());
@@ -119,6 +81,7 @@ export default function Dashboard() {
       value: summary
         ? `${summary.totalXlmCollected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} XLM`
         : null,
+      subValue: fiatConversion?.usd ? `~$${fiatConversion.usd.toLocaleString()} USD` : null,
       cls: "xlm",
     },
   ];
@@ -131,6 +94,7 @@ export default function Dashboard() {
         .summary-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 1rem 1.25rem; }
         .summary-card .label { font-size: 0.78rem; color: #888; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
         .summary-card .value { font-size: 1.6rem; font-weight: 700; color: #1a1a1a; line-height: 1; }
+        .summary-card .sub-value { font-size: 0.9rem; font-weight: 400; color: #2e7d32; margin-top: 0.25rem; }
         .summary-card.paid .value { color: #2e7d32; }
         .summary-card.unpaid .value { color: #e65100; }
         .summary-card.xlm .value { color: #1565c0; }
@@ -219,13 +183,16 @@ export default function Dashboard() {
 
         {/* Summary cards */}
         <div className="summary-cards" aria-label="Payment summary statistics">
-          {cards.map(({ label, value, cls }) => (
+          {cards.map(({ label, value, subValue, cls }) => (
             <div key={label} className={`summary-card ${cls}`}>
               <div className="label">{label}</div>
               {summaryLoading || value == null ? (
                 <div className="summary-skeleton" aria-hidden="true" />
               ) : (
-                <div className="value">{value}</div>
+                <>
+                  <div className="value">{value}</div>
+                  {subValue && <div className="sub-value">{subValue}</div>}
+                </>
               )}
             </div>
           ))}
@@ -237,13 +204,3 @@ export default function Dashboard() {
     </>
   );
 }
-
-const pageBtnStyle = {
-  padding: '0.4rem 0.9rem',
-  fontSize: '0.88rem',
-  background: '#1a1a2e',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 6,
-  cursor: 'pointer',
-};

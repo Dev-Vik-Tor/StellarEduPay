@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { getStudent, getPaymentInstructions, getStudentPayments } from '../services/api';
-import { convertXlmToUsd } from '../services/currencyService';
+import { useFiatConversion } from '../hooks/useFiatConversion';
 import TransactionCard from './TransactionCard';
 
 export default function PaymentForm() {
@@ -11,8 +11,10 @@ export default function PaymentForm() {
   const [error, setError]               = useState('');
   const [loading, setLoading]           = useState(false);
   const [copiedField, setCopiedField]   = useState(null);
-  const [fiatConversion, setFiatConversion] = useState(null);
   const errorRef = useRef(null);
+
+  const feeAmount = instructions?.feeAmount ?? student?.feeAmount;
+  const fiatConversion = useFiatConversion(feeAmount);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -49,21 +51,6 @@ export default function PaymentForm() {
   const rateTime = local?.rateTimestamp
     ? new Date(local.rateTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
-
-  // Fetch fiat conversion when fee amount is available
-  useEffect(() => {
-    async function fetchConversion() {
-      const feeAmount = instructions?.feeAmount ?? student?.feeAmount;
-      if (feeAmount) {
-        const conversion = await convertXlmToUsd(feeAmount);
-        setFiatConversion(conversion);
-      }
-    }
-    
-    if (student || instructions) {
-      fetchConversion();
-    }
-  }, [student, instructions]);
 
   return (
     <div className="container-sm">
@@ -122,7 +109,7 @@ export default function PaymentForm() {
               <small>Exchange rates are indicative and may vary. Actual value depends on market conditions.</small>
             </p>
           )}
-          {!fiatConversion?.usd && (
+          {!fiatConversion?.usd && !fiatConversion?.loading && (
             <p className="mb-0-5 text-muted">
               <small>Fiat conversion rate unavailable</small>
             </p>
