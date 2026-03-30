@@ -40,6 +40,9 @@ Before you begin, ensure you have the following installed:
 
 2. **Install Dependencies**
    ```bash
+   # Root dependencies (for testing)
+   npm install
+   
    # Backend dependencies
    cd backend
    npm install
@@ -47,6 +50,7 @@ Before you begin, ensure you have the following installed:
    # Frontend dependencies
    cd ../frontend
    npm install
+   cd ..
    ```
 
 3. **Configure Environment Variables**
@@ -295,12 +299,14 @@ const calc = (sid, fid) => {
 ### Running Tests
 
 ```bash
-# Backend tests
-cd backend
+# Run all tests (from project root)
 npm test
 
 # Run specific test file
-npm test -- tests/verify_fee_validation.js
+npm test -- tests/payment.test.js
+
+# Run with coverage
+npm test -- --coverage
 ```
 
 ### Test Coverage Requirements
@@ -353,11 +359,11 @@ describe('Payment Validation', () => {
 
 2. **Run all checks locally**
    ```bash
-   # Run tests
-   cd backend && npm test
+   # Run tests (from project root)
+   npm test
    
-   # Check for syntax errors
-   node -c src/app.js
+   # Check backend syntax
+   node -c backend/src/app.js
    ```
 
 3. **Update documentation**
