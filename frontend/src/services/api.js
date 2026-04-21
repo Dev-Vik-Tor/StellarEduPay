@@ -43,9 +43,3 @@ export const getRecentAuditLogs = (limit = 10) =>
   api.get("/audit-logs/recent", { params: { limit } });
 export const getAuditLogs = (params = {}) =>
   api.get("/audit-logs", { params });
-
-// Audit logs
-export const getRecentAuditLogs = (limit = 10) =>
-  api.get("/audit-logs/recent", { params: { limit } });
-export const getAuditLogs = (params = {}) =>
-  api.get("/audit-logs", { params });

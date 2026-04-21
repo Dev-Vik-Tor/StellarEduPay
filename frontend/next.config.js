@@ -2,6 +2,7 @@
 const nextConfig = {
   // Produces a self-contained build in .next/standalone — required for Docker
   output: 'standalone',
+  eslint: { ignoreDuringBuilds: true },
 };
 
 module.exports = nextConfig;

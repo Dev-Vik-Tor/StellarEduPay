@@ -15,7 +15,7 @@ const schoolRoutes = require('./routes/schoolRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
 const disputeRoutes = require('./routes/disputeRoutes');
 
-const { startPolling, stopPolling } = require('./services/transactionService');
+const { startPolling, stopPolling } = require('./services/transactionPollingService');
 const { startRetryWorker, stopRetryWorker, isRetryWorkerRunning } = require('./services/retryService');
 const { startConsistencyScheduler } = require('./services/consistencyScheduler');
 const { startReminderScheduler, stopReminderScheduler } = require('./services/reminderService');

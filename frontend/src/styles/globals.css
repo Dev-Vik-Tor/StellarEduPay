@@ -10,6 +10,34 @@
   --border: #e2e8f0;
 }
 
+html.dark {
+  --bg: #0f172a;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: #1e293b;
+  --primary: #7ec8e3;
+  color-scheme: dark;
+}
+
+html.dark body {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+html.dark .card {
+  background: #1e293b;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+html.dark .code-block {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+html.dark h1, html.dark h2, html.dark h3, html.dark h4 {
+  color: var(--text);
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

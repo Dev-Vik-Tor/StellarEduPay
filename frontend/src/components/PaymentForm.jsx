@@ -1,33 +1,36 @@
 import { useState, useRef } from "react";
 import { getStudent, getPaymentInstructions, getStudentPayments } from "../services/api";
-import TransactionCard from "./TransactionCard";
+
+const STATUS_STYLE = {
+  valid:     { color: "#166534", bg: "#dcfce7" },
+  overpaid:  { color: "#854d0e", bg: "#fef9c3" },
+  underpaid: { color: "#991b1b", bg: "#fee2e2" },
+  unknown:   { color: "#475569", bg: "#f1f5f9" },
+};
 
 export default function PaymentForm() {
-  const [studentId, setStudentId] = useState("");
-  const [student, setStudent] = useState(null);
+  const [studentId, setStudentId]     = useState("");
+  const [student, setStudent]         = useState(null);
   const [instructions, setInstructions] = useState(null);
-  const [payments, setPayments] = useState(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [copiedField, setCopiedField] = useState(null);
+  const [payments, setPayments]       = useState(null);
+  const [error, setError]             = useState("");
+  const [loading, setLoading]         = useState(false);
+  const [copied, setCopied]           = useState(null);
   const errorRef = useRef(null);
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError("");
+    setError(""); setStudent(null); setInstructions(null); setPayments(null);
     setLoading(true);
     try {
-      const [stuRes, instrRes, paymentsRes] = await Promise.all([
+      const [stuRes, instrRes, payRes] = await Promise.all([
         getStudent(studentId),
         getPaymentInstructions(studentId),
-        getStudentPayments(studentId, pageNum),
+        getStudentPayments(studentId),
       ]);
       setStudent(stuRes.data);
       setInstructions(instrRes.data);
-      setPayments(paymentsRes.data?.payments ?? []);
-      setTotalPages(paymentsRes.data?.pages ?? 1);
-      setTotalPayments(paymentsRes.data?.total ?? 0);
-      setPage(pageNum);
+      setPayments(payRes.data?.payments ?? payRes.data ?? []);
     } catch {
       setError("Student not found. Please check the ID.");
       errorRef.current?.focus();
@@ -36,159 +39,125 @@ export default function PaymentForm() {
     }
   }
 
-  async function handleCopy(text, fieldName) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(fieldName);
-      setTimeout(() => setCopiedField(null), 2000);
-    } catch (err) {
-      console.error("Failed to copy:", err);
-    }
+  async function copy(text, key) {
+    await navigator.clipboard.writeText(text).catch(() => {});
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
   }
 
-  const local = instructions?.feeLocalEquivalent;
-  const rateTime = local?.rateTimestamp
-    ? new Date(local.rateTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : null;
-  const isTestnet = process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'testnet';
+  const isTestnet = process.env.NEXT_PUBLIC_STELLAR_NETWORK === "testnet";
 
   return (
-    <div className="container-sm">
-      <h2>Pay School Fees</h2>
+    <>
+      <style>{`
+        .pf-wrap { padding: 2rem 0; }
+        .pf-card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; margin-top: 1.5rem; }
+        .pf-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.4rem; display: block; }
+        .pf-field { display: flex; gap: 0.5rem; align-items: center; }
+        .pf-code { flex: 1; background: var(--border); border-radius: 6px; padding: 0.6rem 0.75rem; font-family: monospace; font-size: 0.85rem; word-break: break-all; color: var(--text); }
+        .pf-copy { padding: 0.5rem 0.9rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.8rem; white-space: nowrap; transition: background 0.15s; }
+        .pf-copy:hover { background: var(--border); }
+        .pf-input { width: 100%; padding: 0.65rem 0.85rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.95rem; background: var(--bg); color: var(--text); outline: none; margin-bottom: 0.75rem; }
+        .pf-input:focus { border-color: var(--accent); }
+        .pf-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+        .pf-row:last-child { border-bottom: none; }
+        .pf-row-label { color: var(--muted); }
+        .pf-hist-item { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; font-size: 0.875rem; }
+      `}</style>
 
-      <form onSubmit={handleSubmit}>
-        <label htmlFor="studentIdInput" className="input-label">
-          Student ID
-        </label>
-        <input
-          id="studentIdInput"
-          type="text"
-          placeholder="e.g. STU1023"
-          value={studentId}
-          onChange={(e) => setStudentId(e.target.value)}
-          required
-          aria-required="true"
-          aria-describedby={error ? "errorMessage" : undefined}
-          className="input-field mb-0-5"
-        />
-        <button type="submit" disabled={loading} className="btn-primary">
-          {loading ? "Loading..." : "Get Payment Instructions"}
-        </button>
-      </form>
-
-      {error && (
-        <p id="errorMessage" ref={errorRef} role="alert" className="alert-error" tabIndex="-1">
-          {error}
+      <div className="pf-wrap">
+        <h2 style={{ marginBottom: "0.25rem" }}>Pay School Fees</h2>
+        <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
+          Enter your student ID to get payment instructions.
         </p>
-      )}
 
-      {student && instructions && (
-        <div className="card">
-          <p>
-            <strong>Student:</strong> {student.name} — Class {student.class}
-          </p>
+        <form onSubmit={handleSubmit}>
+          <label htmlFor="sid" className="pf-label">Student ID</label>
+          <input
+            id="sid" type="text" placeholder="e.g. STU001"
+            value={studentId} onChange={e => setStudentId(e.target.value)}
+            required className="pf-input"
+          />
+          <button type="submit" disabled={loading} className="btn-primary" style={{ width: "100%" }}>
+            {loading ? "Loading…" : "Get Payment Instructions"}
+          </button>
+        </form>
 
-          <p className="my-0-4">
-            <strong>Required Fee:</strong>{' '}
-            {instructions.feeAmount != null ? `${instructions.feeAmount} XLM` : `${student.feeAmount} XLM`}
-            {fiatConversion?.usd && (
-              <span className="ml-0-5 text-success">
-                (~${fiatConversion.usd.toFixed(2)} USD)
-              </span>
+        {error && (
+          <div ref={errorRef} role="alert" tabIndex="-1"
+            style={{ marginTop: "1rem", padding: "0.75rem 1rem", background: "#fee2e2", border: "1px solid #fecaca", borderRadius: 8, color: "#991b1b", fontSize: "0.875rem" }}>
+            {error}
+          </div>
+        )}
+
+        {student && instructions && (
+          <div className="pf-card">
+            {isTestnet && (
+              <div style={{ background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 6, padding: "0.6rem 0.9rem", fontSize: "0.8rem", color: "#854d0e", marginBottom: "1.25rem" }}>
+                ⚠️ Testnet mode — do not send real funds.
+              </div>
             )}
-          </p>
 
-          {fiatConversion?.usd && (
-            <p className="mb-0-5 text-muted" style={{ fontSize: '0.85rem' }}>
-              <em>Approximate rate: 1 XLM ≈ ${fiatConversion.rate.toFixed(4)} USD</em>
-              <br />
-              <small>Exchange rates are indicative and may vary. Actual value depends on market conditions.</small>
-            </p>
-          )}
-          {!fiatConversion?.usd && !fiatConversion?.loading && (
-            <p className="mb-0-5 text-muted">
-              <small>Fiat conversion rate unavailable</small>
-            </p>
-          )}
-
-          <p>
-            <strong>Status:</strong> {student.feePaid ? "✅ Paid" : "❌ Unpaid"}
-          </p>
-          <hr />
-
-          {isTestnet && (
-            <div className="badge-warning mb-1">
-              ⚠️ <strong>TESTNET MODE:</strong> Use only testnet XLM. Do not send real funds.
+            <div className="pf-row"><span className="pf-row-label">Student</span><strong>{student.name}</strong></div>
+            <div className="pf-row"><span className="pf-row-label">Class</span><span>{student.class}</span></div>
+            <div className="pf-row"><span className="pf-row-label">Fee</span><strong>{instructions.feeAmount ?? student.feeAmount} XLM</strong></div>
+            <div className="pf-row" style={{ marginBottom: "1.25rem" }}>
+              <span className="pf-row-label">Status</span>
+              <span style={{ fontWeight: 600, color: student.feePaid ? "#166534" : "#991b1b" }}>
+                {student.feePaid ? "Paid" : "Unpaid"}
+              </span>
             </div>
-          )}
 
-          <div className="mb-1">
-            <label htmlFor="walletAddress" className="input-label mb-0-25">
-              Send payment to:
-            </label>
-            <div className="flex-row">
-              <code id="walletAddress" className="code-block">
-                {instructions.walletAddress}
-              </code>
-              <button
-                type="button"
-                onClick={() => handleCopy(instructions.walletAddress, "wallet")}
-                aria-label="Copy wallet address"
-                title="Copy wallet address"
-                className="btn-copy"
-              >
-                {copiedField === "wallet" ? "✓ Copied!" : "Copy"}
-              </button>
+            <div style={{ marginBottom: "1rem" }}>
+              <span className="pf-label">Wallet Address</span>
+              <div className="pf-field">
+                <span className="pf-code">{instructions.walletAddress}</span>
+                <button className="pf-copy" onClick={() => copy(instructions.walletAddress, "wallet")}>
+                  {copied === "wallet" ? "Copied!" : "Copy"}
+                </button>
+              </div>
             </div>
+
+            <div>
+              <span className="pf-label">Memo (required)</span>
+              <div className="pf-field">
+                <span className="pf-code">{instructions.memo}</span>
+                <button className="pf-copy" onClick={() => copy(instructions.memo, "memo")}>
+                  {copied === "memo" ? "Copied!" : "Copy"}
+                </button>
+              </div>
+            </div>
+
+            {instructions.acceptedAssets?.length > 0 && (
+              <p style={{ marginTop: "1rem", fontSize: "0.8rem", color: "var(--muted)" }}>
+                Accepted: {instructions.acceptedAssets.map(a => a.displayName).join(", ")}
+              </p>
+            )}
           </div>
+        )}
 
-          <div className="mb-1">
-            <label htmlFor="memoField" className="input-label mb-0-25">
-              Memo (required):
-            </label>
-            <div className="flex-row">
-              <code id="memoField" className="code-block">
-                {instructions.memo}
-              </code>
-              <button
-                type="button"
-                onClick={() => handleCopy(instructions.memo, "memo")}
-                aria-label="Copy memo"
-                title="Copy memo"
-                className="btn-copy"
-              >
-                {copiedField === "memo" ? "✓ Copied!" : "Copy"}
-              </button>
-            </div>
+        {payments !== null && (
+          <div style={{ marginTop: "2rem" }}>
+            <h3 style={{ marginBottom: "1rem", fontSize: "1rem" }}>Payment History</h3>
+            {payments.length === 0 ? (
+              <p style={{ color: "var(--muted)", fontSize: "0.9rem" }}>No payments recorded yet.</p>
+            ) : payments.map((p, i) => {
+              const st = p.feeValidationStatus || "unknown";
+              const badge = STATUS_STYLE[st] || STATUS_STYLE.unknown;
+              return (
+                <div key={p.txHash || i} className="pf-hist-item">
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.4rem" }}>
+                    <strong>{p.amount} {p.assetCode || "XLM"}</strong>
+                    <span style={{ ...badge, padding: "0.15rem 0.6rem", borderRadius: 20, fontSize: "0.75rem", fontWeight: 600 }}>{st}</span>
+                  </div>
+                  <div style={{ color: "var(--muted)", fontSize: "0.8rem", fontFamily: "monospace" }}>{p.txHash}</div>
+                  {p.confirmedAt && <div style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>{new Date(p.confirmedAt).toLocaleString()}</div>}
+                </div>
+              );
+            })}
           </div>
-
-          {instructions.acceptedAssets?.length > 0 && (
-            <div className="badge-success">
-              <strong>Accepted Assets:</strong>
-              <ul className="list-unstyled">
-                {instructions.acceptedAssets.map((a) => (
-                  <li key={a.code}>
-                    {a.displayName} ({a.code})
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <p className="text-muted mt-1">{instructions.note}</p>
-        </div>
-      )}
-
-      {payments !== null && (
-        <div className="mt-1-5">
-          <h3 className="mb-0-75">Payment History</h3>
-          {payments.length === 0 ? (
-            <p className="text-muted italic">No payments recorded yet.</p>
-          ) : (
-            payments.map((p) => <TransactionCard key={p.txHash || p._id} payment={p} />)
-          )}
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </>
   );
 }

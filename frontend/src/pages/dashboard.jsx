@@ -1,220 +1,162 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import SyncButton from "../components/SyncButton";
-import { getSyncStatus, getPaymentSummary, getStudents, registerStudent } from "../services/api";
+import { getSyncStatus, getPaymentSummary, getStudents } from "../services/api";
 
 const PAGE_SIZE = 10;
 
-function timeAgo(isoString) {
-  if (!isoString) return "Never";
-  const diffMs = Date.now() - new Date(isoString).getTime();
-  const mins = Math.floor(diffMs / 60000);
+function timeAgo(iso) {
+  if (!iso) return "Never";
+  const mins = Math.floor((Date.now() - new Date(iso)) / 60000);
   if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins} minute${mins !== 1 ? "s" : ""} ago`;
+  if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs} hour${hrs !== 1 ? "s" : ""} ago`;
-  return new Date(isoString).toLocaleString();
+  if (hrs < 24) return `${hrs}h ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
+const STATUS_COLOR = {
+  paid:    { bg: "#dcfce7", color: "#166534" },
+  partial: { bg: "#fef9c3", color: "#854d0e" },
+  unpaid:  { bg: "#fee2e2", color: "#991b1b" },
+};
+
 export default function Dashboard() {
-  const [lastSyncAt, setLastSyncAt] = useState(null);
-  const [syncMessage, setSyncMessage] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  const [summary, setSummary] = useState(null);
+  const [lastSyncAt, setLastSyncAt]     = useState(null);
+  const [syncMsg, setSyncMsg]           = useState(null);
+  const [summary, setSummary]           = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
-
-  const [students, setStudents] = useState([]);
+  const [students, setStudents]         = useState([]);
   const [studentsLoading, setStudentsLoading] = useState(true);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [pages, setPages] = useState(1);
-
-  // Form state
-  const [showForm, setShowForm] = useState(false);
-  const [formLoading, setFormLoading] = useState(false);
-  const [formData, setFormData] = useState({
-    studentId: "",
-    name: "",
-    class: "",
-    feeAmount: "",
-  });
-  const [formError, setFormError] = useState(null);
-
-  // Search & filter state
-  const [search, setSearch] = useState("");
+  const [page, setPage]                 = useState(1);
+  const [pages, setPages]               = useState(1);
+  const [search, setSearch]             = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-
-  useEffect(() => {
-    setLoading(true);
-    getSyncStatus()
-      .then(({ data }) => {
-        setLastSyncAt(data.lastSyncAt);
-        setError(null);
-      })
-      .catch((err) => {
-        setError("Failed to load sync status. Please try again.");
-        console.error(err);
-      })
-      .finally(() => setLoading(false));
-  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [error, setError]               = useState(null);
 
   const fetchSummary = useCallback(() => {
     setSummaryLoading(true);
-    return getPaymentSummary()
+    getPaymentSummary()
       .then(({ data }) => setSummary(data))
-      .catch(() => { })
+      .catch(() => {})
       .finally(() => setSummaryLoading(false));
+  }, []);
+
+  const fetchStudents = useCallback((p) => {
+    setStudentsLoading(true);
+    getStudents(p, PAGE_SIZE)
+      .then(({ data }) => {
+        setStudents(data.students || data);
+        setPages(data.pages || 1);
+      })
+      .catch(() => {})
+      .finally(() => setStudentsLoading(false));
   }, []);
 
   useEffect(() => {
-    setSummaryLoading(true);
-    getPaymentSummary()
-      .then(({ data }) => setSummary(data))
-      .catch(() => { })
-      .finally(() => setSummaryLoading(false));
-  }, []);
+    getSyncStatus()
+      .then(({ data }) => setLastSyncAt(data.lastSyncAt))
+      .catch(() => setError("Could not load sync status."));
+    fetchSummary();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { fetchStudents(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSyncComplete(data) {
     setLastSyncAt(new Date().toISOString());
-    setSyncMessage(data?.message || "Sync complete.");
-    setTimeout(() => setSyncMessage(null), 3000);
+    setSyncMsg(data?.message || "Sync complete.");
+    setTimeout(() => setSyncMsg(null), 3000);
     fetchSummary();
     fetchStudents(1);
   }
 
-  const cards = [
-    { label: "Total Students", value: summary?.totalStudents || summary?.total, cls: "" },
-    { label: "Full Paid", value: summary?.paidCount || summary?.counts?.paid, cls: "paid" },
-    { label: "Pending/Partial", value: (summary?.unpaidCount || 0) + (summary?.counts?.partial || 0), cls: "unpaid" },
-    {
-      label: "XLM Collected",
-      value: summary
-        ? `${(summary.totalXlmCollected || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} XLM`
-        : null,
-      subValue: fiatConversion?.usd ? `~$${fiatConversion.usd.toLocaleString()} USD` : null,
-      cls: "xlm",
-    },
+  const stats = [
+    { label: "Total Students",   value: summary?.totalStudents ?? summary?.total ?? "—" },
+    { label: "Paid",             value: summary?.paidCount    ?? summary?.counts?.paid    ?? "—", accent: "#166534" },
+    { label: "Pending",          value: (summary?.unpaidCount || 0) + (summary?.counts?.partial || 0) || "—", accent: "#854d0e" },
+    { label: "XLM Collected",    value: summary ? `${(summary.totalXlmCollected || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "—", sub: "XLM", accent: "#1d4ed8" },
   ];
 
-  // Build category cards from summary data
-  const categoryCards = summary?.categoryBreakdown
-    ? summary.categoryBreakdown.map(cat => ({
-      label: cat.category,
-      value: `${cat.totalCollected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} XLM`,
-      count: cat.paymentCount,
-      cls: "category",
-    }))
-    : [];
+  const filtered = students.filter(s => {
+    const q = search.toLowerCase();
+    const matchQ = !q || s.name?.toLowerCase().includes(q) || s.studentId?.toLowerCase().includes(q);
+    const matchS = statusFilter === "all" || (s.status || "unpaid").toLowerCase() === statusFilter;
+    return matchQ && matchS;
+  });
 
   return (
     <>
       <style>{`
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.75rem; }
-        .summary-card { background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; padding: 1rem 1.25rem; }
-        .summary-card .label { font-size: 0.78rem; color: #888; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
-        .summary-card .value { font-size: 1.6rem; font-weight: 700; color: #1a1a1a; line-height: 1; }
-        .summary-card .sub-value { font-size: 0.9rem; font-weight: 400; color: #2e7d32; margin-top: 0.25rem; }
-        .summary-card.paid .value { color: #2e7d32; }
-        .summary-card.unpaid .value { color: #e65100; }
-        .summary-card.xlm .value { color: #1565c0; }
-        .summary-card.category .value { color: #6a1b9a; }
-        .summary-skeleton { height: 1.6rem; width: 60%; background: #e0e0e0; border-radius: 4px; animation: pulse 1.5s infinite; }
+        @keyframes fadeUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+        .dash-wrap { max-width: 1000px; margin: 0 auto; padding: 2rem 1rem; animation: fadeUp 0.4s ease both; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem 1.5rem; }
+        .stat-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.5rem; }
+        .stat-value { font-size: 1.75rem; font-weight: 700; line-height: 1; }
+        .stat-sub   { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+        .dash-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .dash-table th { text-align: left; padding: 0.6rem 1rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); }
+        .dash-table td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); }
+        .dash-table tbody tr:last-child td { border-bottom: none; }
+        .dash-table tbody tr:hover { background: rgba(126,200,227,0.06); }
+        .status-badge { display: inline-block; padding: 0.2rem 0.65rem; border-radius: 20px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; }
+        .toolbar { display: flex; gap: 0.75rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+        .toolbar input, .toolbar select { padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text); outline: none; }
+        .toolbar input { flex: 1; min-width: 180px; max-width: 320px; }
+        .toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
+        .page-btn { padding: 0.4rem 0.9rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.85rem; }
+        .page-btn:disabled { opacity: 0.4; cursor: default; }
+        .skeleton { height: 1.4rem; width: 55%; background: var(--border); border-radius: 4px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        .table-wrap { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
       `}</style>
 
-      <div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "1.5rem",
-          }}
-        >
-          <h1 style={{ margin: 0 }}>Admin Dashboard</h1>
+      <div className="dash-wrap">
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: "1.5rem" }}>Dashboard</h1>
+            <p style={{ margin: "0.25rem 0 0", fontSize: "0.82rem", color: "var(--muted)" }}>
+              Last sync: <strong>{timeAgo(lastSyncAt)}</strong>
+            </p>
+          </div>
           <SyncButton onSyncComplete={handleSyncComplete} lastSyncTime={lastSyncAt} />
         </div>
 
-        {/* Sync status alert */}
-        {syncMessage && (
-          <div style={{ background: "#ecfdf5", border: "1px solid #10b98122", padding: "0.75rem 1.25rem", borderRadius: 8, color: "#065f46", marginBottom: "1.5rem", fontSize: "0.95rem", fontWeight: 500 }}>
-            ✓ {syncMessage}
+        {/* Alerts */}
+        {syncMsg && (
+          <div style={{ background: "#dcfce7", border: "1px solid #bbf7d0", borderRadius: 8, padding: "0.65rem 1rem", color: "#166534", fontSize: "0.875rem", margin: "1rem 0" }}>
+            ✓ {syncMsg}
+          </div>
+        )}
+        {error && (
+          <div style={{ background: "#fee2e2", border: "1px solid #fecaca", borderRadius: 8, padding: "0.65rem 1rem", color: "#991b1b", fontSize: "0.875rem", margin: "1rem 0" }}>
+            {error}
           </div>
         )}
 
-        {/* Sync status */}
-        {loading ? (
-          <p style={{ fontSize: "0.85rem", color: "#888" }}>Loading sync status…</p>
-        ) : error ? (
-          <div
-            style={{
-              padding: "1rem",
-              background: "#ffebee",
-              borderRadius: 6,
-              border: "1px solid #ef5350",
-              marginBottom: "1rem",
-            }}
-          >
-            <p style={{ color: "#c62828", margin: "0 0 0.75rem 0" }} role="alert">
-              {error}
-            </p>
-            <button
-              onClick={handleRetry}
-              style={{
-                padding: "0.5rem 1rem",
-                background: "#ef5350",
-                color: "white",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: "0.9rem",
-              }}
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {/* Sync Status Info */}
-        {!loading && (
-          <p style={{ fontSize: "0.85rem", color: "#64748b", marginBottom: "1.5rem" }}>
-            Last data refresh: <strong>{timeAgo(lastSyncAt)}</strong>
-          </p>
-        )}
-
-        {/* Summary cards */}
-        <div className="summary-cards" aria-label="Payment summary statistics">
-          {cards.map(({ label, value, subValue, cls }) => (
-            <div key={label} className={`summary-card ${cls}`}>
-              <div className="label">{label}</div>
-              {summaryLoading || value == null ? (
-                <div className="summary-skeleton" />
-              ) : (
+        {/* Stats */}
+        <div className="stat-grid" style={{ marginTop: "1.5rem" }}>
+          {stats.map(({ label, value, sub, accent }) => (
+            <div key={label} className="stat-card">
+              <div className="stat-label">{label}</div>
+              {summaryLoading ? <div className="skeleton" /> : (
                 <>
-                  <div className="value">{value}</div>
-                  {subValue && <div className="sub-value">{subValue}</div>}
+                  <div className="stat-value" style={accent ? { color: accent } : {}}>{value}</div>
+                  {sub && <div className="stat-sub">{sub}</div>}
                 </>
               )}
             </div>
           ))}
         </div>
 
-        {/* Filters and Search */}
-        <div style={{ display: "flex", gap: "1rem", marginBottom: "1.5rem" }}>
-          <input 
-            placeholder="Search students..."
-            className="form-control"
-            style={{ maxWidth: "340px" }}
+        {/* Toolbar */}
+        <div className="toolbar">
+          <input
+            placeholder="Search by name or ID…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
-          <select 
-            className="form-control" 
-            style={{ maxWidth: "180px" }}
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-          >
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="all">All Status</option>
             <option value="paid">Paid</option>
             <option value="partial">Partial</option>
@@ -222,68 +164,51 @@ export default function Dashboard() {
           </select>
         </div>
 
-        {/* Student Table */}
-        {studentsLoading ? (
-          <p>Loading students...</p>
-        ) : (
-          <>
-            <table className="student-table">
+        {/* Table */}
+        <div className="table-wrap">
+          {studentsLoading ? (
+            <div style={{ padding: "2rem", textAlign: "center", color: "var(--muted)", fontSize: "0.9rem" }}>Loading…</div>
+          ) : (
+            <table className="dash-table">
               <thead>
                 <tr>
                   <th>Student ID</th>
                   <th>Name</th>
                   <th>Class</th>
-                  <th>Total Fee</th>
+                  <th>Fee</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(s => (
-                  <tr key={s.studentId}>
-                    <td>{s.studentId}</td>
-                    <td style={{ fontWeight: 500 }}>{s.name}</td>
-                    <td>{s.class}</td>
-                    <td>{s.feeAmount} XLM</td>
-                    <td>
-                      <span className={`badge ${s.status?.toLowerCase() || 'unpaid'}`}>
-                        {s.status || 'Unpaid'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {filtered.length === 0 && (
-                  <tr>
-                    <td colSpan="5" style={{ textAlign: "center", padding: "2rem", color: "#94a3b8" }}>
-                      No students found matching filters.
-                    </td>
-                  </tr>
-                )}
+                {filtered.length === 0 ? (
+                  <tr><td colSpan="5" style={{ textAlign: "center", padding: "2.5rem", color: "var(--muted)" }}>No students found.</td></tr>
+                ) : filtered.map(s => {
+                  const st = (s.status || "unpaid").toLowerCase();
+                  const badge = STATUS_COLOR[st] || STATUS_COLOR.unpaid;
+                  return (
+                    <tr key={s.studentId}>
+                      <td style={{ color: "var(--muted)", fontFamily: "monospace" }}>{s.studentId}</td>
+                      <td style={{ fontWeight: 500 }}>{s.name}</td>
+                      <td>{s.class}</td>
+                      <td>{s.feeAmount} XLM</td>
+                      <td>
+                        <span className="status-badge" style={badge}>{st}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+          )}
+        </div>
 
-            {/* Pagination Controls */}
-            {pages > 1 && (
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
-                <button 
-                  disabled={page === 1} 
-                  onClick={() => setPage(page - 1)}
-                  style={{ ...pageBtnStyle, opacity: page === 1 ? 0.5 : 1 }}
-                >
-                  Prev
-                </button>
-                <div style={{ display: "flex", alignItems: "center", padding: "0 1rem", fontSize: "0.9rem" }}>
-                  Page {page} of {pages}
-                </div>
-                <button 
-                  disabled={page === pages} 
-                  onClick={() => setPage(page + 1)}
-                  style={{ ...pageBtnStyle, opacity: page === pages ? 0.5 : 1 }}
-                >
-                  Next
-                </button>
-              </div>
-            )}
-          </>
+        {/* Pagination */}
+        {pages > 1 && (
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.5rem", marginTop: "1rem", fontSize: "0.85rem" }}>
+            <button className="page-btn" disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+            <span style={{ color: "var(--muted)" }}>Page {page} of {pages}</span>
+            <button className="page-btn" disabled={page === pages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          </div>
         )}
       </div>
     </>
