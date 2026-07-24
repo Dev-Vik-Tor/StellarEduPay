@@ -226,6 +226,21 @@ async function submitTransaction(req, res, next) {
     paymentRecord.ledgerSequence = txResponse.ledger;
     await paymentRecord.save();
 
+    // Issue #1034: Update student balance fields using the unified balance updater.
+    // This ensures submitTransaction produces the same Student state updates as
+    // verifyPayment and syncPaymentsForSchool, eliminating divergence.
+    const { updateStudentBalance } = require('../utils/studentBalanceUpdater');
+    try {
+      await updateStudentBalance(req.schoolId, paymentRecord.studentId, {});
+    } catch (balanceErr) {
+      logger.error('Failed to update student balance after submitTransaction', {
+        schoolId: req.schoolId,
+        studentId: paymentRecord.studentId,
+        txHash: normalizedHash,
+        error: balanceErr.message,
+      });
+    }
+
     const network = process.env.STELLAR_NETWORK === 'mainnet' ? 'public' : 'testnet';
     res.json({
       verified: true,
@@ -436,16 +451,11 @@ async function verifyPayment(req, res, next) {
           throw dupErr;
         }
 
-        // Update student record immediately after recording (#846) — sync path also does
-        // this, but the verify path never did, leaving totalPaid/remainingBalance stale.
-        await Student.findOneAndUpdate(
-          { schoolId, studentId: studentStrId },
-          {
-            totalPaid: cumulativeTotal,
-            remainingBalance: parseFloat(Math.max(0, studentObj.feeAmount - cumulativeTotal).toFixed(7)),
-            feePaid: cumulativeTotal >= studentObj.feeAmount,
-          },
-        );
+        // Issue #1034: Update student balance using the unified balance updater.
+        // This ensures verifyPayment, submitTransaction, and syncPaymentsForSchool
+        // all use the same balance computation logic.
+        const { updateStudentBalance } = require('../utils/studentBalanceUpdater');
+        await updateStudentBalance(schoolId, studentStrId, {});
       } finally {
         await lock.release(studentLockKey, studentLockToken);
       }
