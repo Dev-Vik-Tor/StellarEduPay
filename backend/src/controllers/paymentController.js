@@ -165,7 +165,14 @@ async function createPaymentIntent(req, res, next) {
       startedAt: new Date(),
     });
 
-    res.status(201).json({ ...intent.toObject(), categoryInfo });
+    const intentObj = intent.toObject();
+    res.status(201).json({
+      ...intentObj,
+      // Issue #1035: Include intentId in response so client can pass it back in submitTransaction
+      // to ensure the submission is matched to the correct PENDING record
+      intentId: intent._id.toString(),
+      categoryInfo,
+    });
   } catch (err) {
     next(err);
   }
@@ -174,7 +181,7 @@ async function createPaymentIntent(req, res, next) {
 // ====================== SUBMIT XDR TRANSACTION ======================
 async function submitTransaction(req, res, next) {
   try {
-    const { xdr } = req.body;
+    const { xdr, paymentIntentId } = req.body;
     if (!xdr) return res.status(400).json({ error: 'Missing xdr parameter' });
 
     const tx = new StellarSdk.Transaction(xdr, require('../config/stellarConfig').networkPassphrase);
@@ -191,7 +198,34 @@ async function submitTransaction(req, res, next) {
     const memo = tx.memo.value ? tx.memo.value.toString() : null;
     if (!memo) return res.status(400).json({ error: 'Transaction must include the student ID as a memo' });
 
-    let paymentRecord = await Payment.findOne({ schoolId: req.schoolId, memo, status: 'PENDING' }).sort({ createdAt: -1 });
+    // Issue #1035: Match the specific PENDING record via paymentIntentId when provided
+    // to avoid misattribution if multiple PENDING records exist for the same memo.
+    // When paymentIntentId is not provided, fall back to matching by memo (backward compatibility).
+    let paymentRecord;
+    if (paymentIntentId) {
+      const intent = await PaymentIntent.findById(paymentIntentId);
+      if (!intent) {
+        return res.status(404).json({ error: 'Payment intent not found', code: 'INTENT_NOT_FOUND' });
+      }
+      if (intent.schoolId !== req.schoolId) {
+        return res.status(403).json({ error: 'Payment intent does not belong to this school', code: 'INTENT_MISMATCH' });
+      }
+      if (intent.status !== 'pending') {
+        return res.status(400).json({ error: `Payment intent is not in pending status (status: ${intent.status})`, code: 'INTENT_NOT_PENDING' });
+      }
+
+      // Look for a PENDING payment record that corresponds to this intent
+      paymentRecord = await Payment.findOne({
+        schoolId: req.schoolId,
+        studentId: intent.studentId,
+        memo: intent.memo,
+        status: 'PENDING',
+      });
+    } else {
+      // Backward compatibility: match by memo alone (highest risk path)
+      paymentRecord = await Payment.findOne({ schoolId: req.schoolId, memo, status: 'PENDING' }).sort({ createdAt: -1 });
+    }
+
     if (!paymentRecord) {
       const studentObj = await Student.findOne({ schoolId: req.schoolId, studentId: memo });
       if (!studentObj) return res.status(404).json({ error: 'Associated student not found in the database. Cannot process transaction.' });
